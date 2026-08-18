@@ -8,10 +8,10 @@
 import Foundation
 
 public typealias ACRequestHeaders = [String: String]
-public typealias ACConnectionHandler = (_ headers: ACRequestHeaders?) -> Void
-public typealias ACDisconnectionHandler = (_ reason: String?) -> Void
-public typealias ACTextHandler = (_ text: String) -> Void
-public typealias ACEventHandler = () -> Void
+public typealias ACConnectionHandler = @Sendable (_ headers: ACRequestHeaders?) -> Void
+public typealias ACDisconnectionHandler = @Sendable (_ reason: String?) -> Void
+public typealias ACTextHandler = @Sendable (_ text: String) -> Void
+public typealias ACEventHandler = @Sendable () -> Void
 
 public protocol ACWebSocketProtocol {
 
