@@ -6,20 +6,28 @@
 //
 
 import Foundation
+import os
 
 public final class ACClient {
-    
+
     // MARK: Properties
-    
+
     public var headers: ACRequestHeaders? = nil
-    
+
     static var reconnectDelay: UInt32 = 1
-    
+
     var connectionMonitor: ACConnectionMontior?
-    
+
     private var socket: ACWebSocketProtocol
-    private var subscriptions: [ACChannelIdentifier: ACSubscription] = [:]
-    private var taps: Set<ACClientTap> = []
+
+    private struct SubscriberState {
+        var subscriptions: [ACChannelIdentifier: ACSubscription] = [:]
+        var taps: Set<ACClientTap> = []
+    }
+
+    /// Written by the app's threads through `subscribe`/`unsubscribe`/`add`/`remove` and by the
+    /// socket's callback queue when a subscription is rejected, so every access takes this lock.
+    private let subscriberState = OSAllocatedUnfairLock(initialState: SubscriberState())
     
     // MARK: Initialization
     
@@ -39,32 +47,37 @@ public final class ACClient {
     // MARK: Socket Callbacks
     
     private func onSocketConnected(headers: ACRequestHeaders?) {
-        taps.forEach() { $0.onConnected?(headers) }
-        
-        subscriptions.keys.forEach() {
+        let state = subscriberState.withLock { $0 }
+
+        state.taps.forEach() { $0.onConnected?(headers) }
+
+        state.subscriptions.keys.forEach() {
             guard let command = ACCommand(type: .subscribe, identifier: $0) else { return }
             send(command)
         }
     }
-    
+
     private func onSocketDisconnected(reason: String?) {
-        taps.forEach() { $0.onDisconnected?(reason) }
+        subscriberState.withLock { $0.taps }.forEach() { $0.onDisconnected?(reason) }
     }
-    
+
     private func onSocketText(text: String) {
+        let taps = subscriberState.withLock { $0.taps }
+
         taps.forEach() { $0.onText?(text) }
-        
+
         guard let message = ACMessage(string: text) else { return }
-        
+
         taps.forEach() { $0.onMessage?(message) }
-        
-        guard let channelIdentifier = message.identifier, let subscription = subscriptions[channelIdentifier] else { return }
+
+        guard let channelIdentifier = message.identifier,
+              let subscription = subscriberState.withLock({ $0.subscriptions[channelIdentifier] }) else { return }
 
         subscription.onMessage(message)
-        
+
         switch message.type {
         case .rejectSubscription:
-            self.subscriptions.removeValue(forKey: subscription.channelIdentifier)
+            subscriberState.withLock { _ = $0.subscriptions.removeValue(forKey: subscription.channelIdentifier) }
         default:
             break
         }
@@ -102,37 +115,40 @@ public final class ACClient {
     
     public func subscribe(to channelIdentifier: ACChannelIdentifier, with messageHandler: @escaping ACMessageHandler) -> ACSubscription? {
         guard let command = ACCommand(type: .subscribe, identifier: channelIdentifier) else { return nil }
-        
-        let subscription = ACSubscription(client: self, channelIdentifier: channelIdentifier, onMessage: messageHandler)
-        
-        guard subscriptions[subscription.channelIdentifier] == nil else { return nil }
 
-        subscriptions[subscription.channelIdentifier] = subscription
+        let subscription = ACSubscription(client: self, channelIdentifier: channelIdentifier, onMessage: messageHandler)
+
+        let inserted = subscriberState.withLock { state in
+            guard state.subscriptions[subscription.channelIdentifier] == nil else { return false }
+            state.subscriptions[subscription.channelIdentifier] = subscription
+            return true
+        }
+        guard inserted else { return nil }
+
         send(command)
-        
+
         return subscription
     }
-    
+
     @discardableResult
     public func unsubscribe(from subscription: ACSubscription) -> Bool {
-        guard subscriptions[subscription.channelIdentifier] != nil else { return false }
-        
         guard let command = ACCommand(type: .unsubscribe, identifier: subscription.channelIdentifier) else { return false }
-        
-        subscriptions.removeValue(forKey: subscription.channelIdentifier)
+
+        guard subscriberState.withLock({ $0.subscriptions.removeValue(forKey: subscription.channelIdentifier) != nil }) else { return false }
+
         send(command)
-        
+
         return true
     }
-    
+
     // MARK: Tapping
-    
+
     public func add(_ tap: ACClientTap) {
-        taps.insert(tap)
+        subscriberState.withLock { _ = $0.taps.insert(tap) }
     }
-    
+
     public func remove(_ tap: ACClientTap) {
-        taps.remove(tap)
+        subscriberState.withLock { _ = $0.taps.remove(tap) }
     }
     
     // MARK: Deinitialization
@@ -141,3 +157,11 @@ public final class ACClient {
         connectionMonitor?.stop()
     }
 }
+
+// MARK: - Sendable
+
+/// `@unchecked` because only part of the type is checkable: `subscriptions` and `taps` are behind
+/// `subscriberState`'s lock, while the rest is a usage contract — `socket`, `headers` and
+/// `connectionMonitor` are configured before `connect()` and left alone afterwards, and
+/// `reconnectDelay` is a knob the tests set before exercising reconnection.
+extension ACClient: @unchecked Sendable {}

@@ -7,7 +7,7 @@
 
 import Foundation
 
-public struct ACClientTap {
+public struct ACClientTap: Sendable {
     
     // MARK: Properties
     

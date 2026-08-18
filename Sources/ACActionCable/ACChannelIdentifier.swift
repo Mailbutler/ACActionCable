@@ -7,29 +7,26 @@
 
 import Foundation
 
-public struct ACChannelIdentifier {
-    
+public struct ACChannelIdentifier: Sendable {
+
     // MARK: Properties
-    
-    let dictionary: [String: Any]
+
     let string: String
-    
+
     // MARK: Initialization
-    
+
     public init?(channelName: String, identifier: [String: Any] = [:]) {
         var dictionary = identifier
         dictionary["channel"] = channelName
-        self.dictionary = dictionary
-        
-        guard let string = Self.json(from: self.dictionary) else { return nil }
+
+        guard let string = Self.json(from: dictionary) else { return nil }
         self.string = string
     }
-    
+
     private init?(string: String) {
         self.string = string
-        
-        guard let data = string.data(using: .utf8), let dictionary = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        self.dictionary = dictionary
+
+        guard let data = string.data(using: .utf8), (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] != nil else { return nil }
     }
     
     // MARK: Helpers

@@ -8,9 +8,9 @@
 import Foundation
 import os
 
-public typealias ACMessageHandler = (ACMessage) -> Void
+public typealias ACMessageHandler = @Sendable (ACMessage) -> Void
 
-public struct ACMessage: Decodable {
+public struct ACMessage: Decodable, Sendable {
 
     // MARK: Properties
 
@@ -24,7 +24,7 @@ public struct ACMessage: Decodable {
         return OSAllocatedUnfairLock(initialState: decoder)
     }()
 
-    private typealias RegisteredMessageType = any (Decodable & SendableMetatype).Type
+    private typealias RegisteredMessageType = any (Decodable & Sendable).Type
     private static let messageTypesStorage = OSAllocatedUnfairLock(initialState: [String: RegisteredMessageType]())
 
     /// Applies `configure` to the decoder used for all messages, while no message is being decoded.
@@ -50,7 +50,7 @@ public struct ACMessage: Decodable {
         case reconnect
     }
 
-    public static func register<A: Decodable & SendableMetatype>(type: A.Type, forChannelIdentifier identifier: ACChannelIdentifier) {
+    public static func register<A: Decodable & Sendable>(type: A.Type, forChannelIdentifier identifier: ACChannelIdentifier) {
         messageTypesStorage.withLock { $0[identifier.string] = type }
     }
 
@@ -71,11 +71,10 @@ public struct ACMessage: Decodable {
     init?(string: String) {
         guard let data = string.data(using: .utf8) else { return nil }
 
-        // Unchecked at this one call site because an ACMessage is not Sendable (its body carries
-        // `Any` payloads). The decode must stay inside the lock: it is what makes configureDecoder
-        // wait until no message is being decoded, so copying the decoder out and decoding outside
-        // would let a configuration change mutate it mid-decode.
-        let decodedMessage = Self.decoderStorage.withLockUnchecked { try? $0.decode(ACMessage.self, from: data) }
+        // The decode stays inside the lock: that is what makes configureDecoder wait until no
+        // message is being decoded, so copying the decoder out and decoding outside would let a
+        // configuration change mutate it mid-decode.
+        let decodedMessage = Self.decoderStorage.withLock { try? $0.decode(ACMessage.self, from: data) }
         guard var message = decodedMessage else { return nil }
 
         do {
@@ -110,7 +109,7 @@ public struct ACMessage: Decodable {
 
 // MARK: ACMessageType
 
-public enum ACMessageType: String, Decodable {
+public enum ACMessageType: String, Decodable, Sendable {
     case confirmSubscription = "confirm_subscription"
     case rejectSubscription = "reject_subscription"
     case welcome
@@ -121,9 +120,9 @@ public enum ACMessageType: String, Decodable {
 
 // MARK: ACMessageBody
 
-public enum ACMessageBody: Decodable {
+public enum ACMessageBody: Decodable, Sendable {
     case ping(Int)
-    case object(Any?)
+    case object((any Sendable)?)
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
@@ -139,8 +138,8 @@ public enum ACMessageBody: Decodable {
 
 // MARK: ACMessageBodyObject
 
-public struct ACMessageBodySingleObject: Decodable {
-    public let object: Any?
+public struct ACMessageBodySingleObject: Decodable, Sendable {
+    public let object: (any Sendable)?
     
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: DynamicKey.self)
@@ -156,10 +155,10 @@ public struct ACMessageBodySingleObject: Decodable {
         object = try? decoder(container)
     }
 
-    private typealias BodyDecoder = @Sendable (KeyedDecodingContainer<DynamicKey>) throws -> Any
+    private typealias BodyDecoder = @Sendable (KeyedDecodingContainer<DynamicKey>) throws -> any Sendable
     private static let decodersStorage = OSAllocatedUnfairLock(initialState: [String: BodyDecoder]())
 
-    public static func register<A: Decodable & SendableMetatype>(type: A.Type, forKey key: String? = nil) {
+    public static func register<A: Decodable & Sendable>(type: A.Type, forKey key: String? = nil) {
         let pascalCaseTypeName = String(describing: type)
         let camelCaseTypeName = pascalCaseTypeName.prefix(1).lowercased() + pascalCaseTypeName.dropFirst()
 
@@ -193,7 +192,7 @@ struct DynamicKey: CodingKey {
 
 // MARK: ACDisconnectReason
 
-public enum ACDisconnectReason: String, Decodable {
+public enum ACDisconnectReason: String, Decodable, Sendable {
     case unauthorized
     case invalidRequest = "invalid_request"
     case serverRestart = "server_restart"

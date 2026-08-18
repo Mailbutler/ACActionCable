@@ -7,14 +7,14 @@
 
 import Foundation
 
-public class ACSubscription {
-    
+public final class ACSubscription: Sendable {
+
     // MARK: Properties
-    
+
     let channelIdentifier: ACChannelIdentifier
     let onMessage: ACMessageHandler
-        
-    private unowned var client: ACClient
+
+    private unowned let client: ACClient
     
     // MARK: Initialization
     
