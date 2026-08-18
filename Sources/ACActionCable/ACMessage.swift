@@ -21,17 +21,18 @@ public struct ACMessage: Decodable {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .secondsSince1970
-        return OSAllocatedUnfairLock(uncheckedState: decoder)
+        return OSAllocatedUnfairLock(initialState: decoder)
     }()
 
-    private static let messageTypesStorage = OSAllocatedUnfairLock(uncheckedState: [String: Decodable.Type]())
+    private typealias RegisteredMessageType = any (Decodable & SendableMetatype).Type
+    private static let messageTypesStorage = OSAllocatedUnfairLock(initialState: [String: RegisteredMessageType]())
 
     /// Applies `configure` to the decoder used for all messages, while no message is being decoded.
     ///
     /// `JSONDecoder` is a class, so vending it directly would let callers mutate it while the
     /// socket is decoding on another thread; this is the only way to change its configuration.
-    public static func configureDecoder(_ configure: (JSONDecoder) -> Void) {
-        decoderStorage.withLockUnchecked { configure($0) }
+    public static func configureDecoder(_ configure: @Sendable (JSONDecoder) -> Void) {
+        decoderStorage.withLock { configure($0) }
     }
 
     public var type: ACMessageType?
@@ -49,20 +50,20 @@ public struct ACMessage: Decodable {
         case reconnect
     }
 
-    public static func register<A: Decodable>(type: A.Type, forChannelIdentifier identifier: ACChannelIdentifier) {
-        messageTypesStorage.withLockUnchecked { $0[identifier.string] = type }
+    public static func register<A: Decodable & SendableMetatype>(type: A.Type, forChannelIdentifier identifier: ACChannelIdentifier) {
+        messageTypesStorage.withLock { $0[identifier.string] = type }
     }
 
     public static func unregisterType(forChannelIdentifier identifier: ACChannelIdentifier) {
-        messageTypesStorage.withLockUnchecked { _ = $0.removeValue(forKey: identifier.string) }
+        messageTypesStorage.withLock { _ = $0.removeValue(forKey: identifier.string) }
     }
 
     public static func unregisterAllTypes() {
-        messageTypesStorage.withLockUnchecked { $0.removeAll() }
+        messageTypesStorage.withLock { $0.removeAll() }
     }
 
-    private static func messageType(forChannelIdentifier identifier: ACChannelIdentifier) -> Decodable.Type? {
-        messageTypesStorage.withLockUnchecked { $0[identifier.string] }
+    private static func messageType(forChannelIdentifier identifier: ACChannelIdentifier) -> RegisteredMessageType? {
+        messageTypesStorage.withLock { $0[identifier.string] }
     }
 
     // MARK: Initialization
@@ -70,6 +71,10 @@ public struct ACMessage: Decodable {
     init?(string: String) {
         guard let data = string.data(using: .utf8) else { return nil }
 
+        // Unchecked at this one call site because an ACMessage is not Sendable (its body carries
+        // `Any` payloads). The decode must stay inside the lock: it is what makes configureDecoder
+        // wait until no message is being decoded, so copying the decoder out and decoding outside
+        // would let a configuration change mutate it mid-decode.
         let decodedMessage = Self.decoderStorage.withLockUnchecked { try? $0.decode(ACMessage.self, from: data) }
         guard var message = decodedMessage else { return nil }
 
@@ -151,14 +156,14 @@ public struct ACMessageBodySingleObject: Decodable {
         object = try? decoder(container)
     }
 
-    private typealias BodyDecoder = (KeyedDecodingContainer<DynamicKey>) throws -> Any
-    private static let decodersStorage = OSAllocatedUnfairLock(uncheckedState: [String: BodyDecoder]())
+    private typealias BodyDecoder = @Sendable (KeyedDecodingContainer<DynamicKey>) throws -> Any
+    private static let decodersStorage = OSAllocatedUnfairLock(initialState: [String: BodyDecoder]())
 
-    public static func register<A: Decodable>(type: A.Type, forKey key: String? = nil) {
+    public static func register<A: Decodable & SendableMetatype>(type: A.Type, forKey key: String? = nil) {
         let pascalCaseTypeName = String(describing: type)
         let camelCaseTypeName = pascalCaseTypeName.prefix(1).lowercased() + pascalCaseTypeName.dropFirst()
 
-        decodersStorage.withLockUnchecked { decoders in
+        decodersStorage.withLock { decoders in
             decoders[camelCaseTypeName] = { container in
                 try container.decode(A.self, forKey: DynamicKey(stringValue: key ?? camelCaseTypeName)!)
             }
@@ -166,7 +171,7 @@ public struct ACMessageBodySingleObject: Decodable {
     }
 
     private static func decoder(forKey key: String) -> BodyDecoder? {
-        decodersStorage.withLockUnchecked { $0[key] }
+        decodersStorage.withLock { $0[key] }
     }
 }
 
