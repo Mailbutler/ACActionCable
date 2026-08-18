@@ -1,4 +1,4 @@
-name: Xcode - Build, Analyze and Test
+name: Build and Test
 
 on:
   push:
@@ -8,11 +8,11 @@ on:
 
 jobs:
   build:
-    name: Build, analyze and test default scheme using xcodebuild command
+    name: Build and test the package
     runs-on: macos-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Build, Analyze and Test
-        run: xcodebuild clean build analyze test -project ACActionCable.xcodeproj -scheme ACActionCable-Package -destination 'platform=macOS' | xcpretty && exit ${PIPESTATUS[0]}
+      - name: Build and Test
+        run: swift test

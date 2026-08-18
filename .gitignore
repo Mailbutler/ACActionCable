@@ -1,10 +1,4 @@
-Packages
-.build
-xcuserdata
-DerivedData/
-.DS_Store
-.swiftpm
-db.sqlite
-.env*
-Keys/*
-!Keys/.gitkeep
+.build/
+.swiftpm/
+Derived/
+ACActionCable.xcodeproj/

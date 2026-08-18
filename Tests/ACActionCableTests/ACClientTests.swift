@@ -6,6 +6,7 @@
 //
 
 import XCTest
+@testable import ACActionCable
 
 final class ACClientTests: XCTestCase {
     
