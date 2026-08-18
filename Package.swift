@@ -1,11 +1,11 @@
-// swift-tools-version:5.2
+// swift-tools-version:5.7
 import PackageDescription
 
 let package = Package(
     name: "ACActionCable",
     platforms: [
-        .macOS(.v10_13),
-        .iOS(.v11)
+        .macOS(.v13),
+        .iOS(.v16)
     ],
     products: [
         .library(

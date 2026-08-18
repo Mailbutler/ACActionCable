@@ -144,7 +144,7 @@ class ACMessageTests: XCTestCase {
         let format = #"{"identifier":"{\"channel\":\"TestChannel\",\"test_id\":32}","message":{"my_date":{"date":%f}}}"#
         let string = String(format: format, expected.timeIntervalSince1970)
         
-        ACMessage.decoder.dateDecodingStrategy = .secondsSince1970
+        ACMessage.configureDecoder { $0.dateDecodingStrategy = .secondsSince1970 }
         let message = ACMessage(string: string)
 
         switch message?.body {
@@ -170,9 +170,9 @@ class ACMessageTests: XCTestCase {
         let format = #"{"identifier":"{\"channel\":\"TestChannel\",\"test_id\":32}","message":{"my_date":{"date":%@}}}"#
         let string = String(format: format, ISO8601DateFormatter().string(from: expected).debugDescription)
         
-        ACMessage.decoder.dateDecodingStrategy = .iso8601
+        ACMessage.configureDecoder { $0.dateDecodingStrategy = .iso8601 }
         let message = ACMessage(string: string)
-        ACMessage.decoder.dateDecodingStrategy = .secondsSince1970
+        ACMessage.configureDecoder { $0.dateDecodingStrategy = .secondsSince1970 }
 
         switch message?.body {
         case .object(let bodyObject):

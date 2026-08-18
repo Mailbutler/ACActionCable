@@ -6,21 +6,33 @@
 //
 
 import Foundation
+import os
 
 public typealias ACMessageHandler = (ACMessage) -> Void
 
 public struct ACMessage: Decodable {
-    
-    // MARK: Properties
-    
-    private static var messageTypes: [String: Decodable.Type] = [:]
 
-    public static var decoder: JSONDecoder = {
+    // MARK: Properties
+
+    // Separate locks on purpose: decoding holds decoderStorage's lock while init(from:) reads
+    // messageTypesStorage, and an unfair lock is not reentrant, so sharing one would deadlock
+    // on that nested acquisition.
+    private static let decoderStorage: OSAllocatedUnfairLock<JSONDecoder> = {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         decoder.dateDecodingStrategy = .secondsSince1970
-        return decoder
+        return OSAllocatedUnfairLock(uncheckedState: decoder)
     }()
+
+    private static let messageTypesStorage = OSAllocatedUnfairLock(uncheckedState: [String: Decodable.Type]())
+
+    /// Applies `configure` to the decoder used for all messages, while no message is being decoded.
+    ///
+    /// `JSONDecoder` is a class, so vending it directly would let callers mutate it while the
+    /// socket is decoding on another thread; this is the only way to change its configuration.
+    public static func configureDecoder(_ configure: (JSONDecoder) -> Void) {
+        decoderStorage.withLockUnchecked { configure($0) }
+    }
 
     public var type: ACMessageType?
     public var body: ACMessageBody?
@@ -38,21 +50,28 @@ public struct ACMessage: Decodable {
     }
 
     public static func register<A: Decodable>(type: A.Type, forChannelIdentifier identifier: ACChannelIdentifier) {
-        messageTypes[identifier.string] = type
+        messageTypesStorage.withLockUnchecked { $0[identifier.string] = type }
     }
 
     public static func unregisterType(forChannelIdentifier identifier: ACChannelIdentifier) {
-        messageTypes.removeValue(forKey: identifier.string)
+        messageTypesStorage.withLockUnchecked { _ = $0.removeValue(forKey: identifier.string) }
     }
 
     public static func unregisterAllTypes() {
-        messageTypes.removeAll()
+        messageTypesStorage.withLockUnchecked { $0.removeAll() }
+    }
+
+    private static func messageType(forChannelIdentifier identifier: ACChannelIdentifier) -> Decodable.Type? {
+        messageTypesStorage.withLockUnchecked { $0[identifier.string] }
     }
 
     // MARK: Initialization
     
     init?(string: String) {
-        guard let data = string.data(using: .utf8), var message = try? Self.decoder.decode(ACMessage.self, from: data) else { return nil }
+        guard let data = string.data(using: .utf8) else { return nil }
+
+        let decodedMessage = Self.decoderStorage.withLockUnchecked { try? $0.decode(ACMessage.self, from: data) }
+        guard var message = decodedMessage else { return nil }
 
         do {
             if let jsonMessage = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any], let decodedBody = jsonMessage["message"] as? [String: Any]  {
@@ -75,7 +94,7 @@ public struct ACMessage: Decodable {
         reconnect = try container.decodeIfPresent(Bool.self, forKey: .reconnect)
 
         // special handling for message BODY
-        if let identifier, let messageType = Self.messageTypes[identifier.string] {
+        if let identifier, let messageType = Self.messageType(forChannelIdentifier: identifier) {
             let bodyObject = try container.decodeIfPresent(messageType, forKey: .body)
             body = ACMessageBody.object(bodyObject)
         } else {
@@ -125,23 +144,29 @@ public struct ACMessageBodySingleObject: Decodable {
         }
         
         let key = firstKey.stringValue
-        guard let decoder = Self.decoders[key] else {
+        guard let decoder = Self.decoder(forKey: key) else {
             throw DecodingError.typeMismatch(ACMessageBodySingleObject.self, DecodingError.Context(codingPath: container.codingPath, debugDescription: "No message decoder registered for key: \(key)"))
         }
-        
+
         object = try? decoder(container)
     }
-    
+
     private typealias BodyDecoder = (KeyedDecodingContainer<DynamicKey>) throws -> Any
-    private static var decoders: [String: BodyDecoder] = [:]
-    
+    private static let decodersStorage = OSAllocatedUnfairLock(uncheckedState: [String: BodyDecoder]())
+
     public static func register<A: Decodable>(type: A.Type, forKey key: String? = nil) {
         let pascalCaseTypeName = String(describing: type)
         let camelCaseTypeName = pascalCaseTypeName.prefix(1).lowercased() + pascalCaseTypeName.dropFirst()
 
-        decoders[camelCaseTypeName] = { container in
-            try container.decode(A.self, forKey: DynamicKey(stringValue: key ?? camelCaseTypeName)!)
+        decodersStorage.withLockUnchecked { decoders in
+            decoders[camelCaseTypeName] = { container in
+                try container.decode(A.self, forKey: DynamicKey(stringValue: key ?? camelCaseTypeName)!)
+            }
         }
+    }
+
+    private static func decoder(forKey key: String) -> BodyDecoder? {
+        decodersStorage.withLockUnchecked { $0[key] }
     }
 }
 
